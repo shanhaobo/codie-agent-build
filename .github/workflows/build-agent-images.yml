@@ -58,6 +58,12 @@ jobs:
 
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v4
+        with:
+          # Pull binfmt fresh each job instead of via GHA cache. The parallel
+          # matrix jobs otherwise race for the same cache key and log a benign
+          # "Unable to reserve cache ... another job may be creating this cache"
+          # warning. The re-pull is a few seconds; no effect on the build.
+          cache-image: false
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
