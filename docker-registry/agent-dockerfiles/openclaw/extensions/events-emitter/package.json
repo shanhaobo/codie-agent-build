@@ -1,0 +1,36 @@
+{
+  "private": true,
+  "name": "@codie/openclaw-events-emitter",
+  "version": "0.1.0",
+  "description": "Codie boundary events emitter — forwards OpenClaw lifecycle/tool/subagent events to codie-host-mcp for AgentDesk visualization",
+  "type": "module",
+  "main": "./index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "5.7.2",
+    "vitest": "2.1.8",
+    "@types/node": "^20"
+  },
+  "//peerDependencies": "openclaw and @openclaw/plugin-sdk are runtime peers provided by the OpenClaw docker build context (see Task 7). They are intentionally omitted from peerDependencies because pnpm 10 attempts to resolve even optional peerDeps from the npm registry, which fails (they live in the OpenClaw workspace, not npm). When this extension is consumed inside the OpenClaw container, the host's node_modules satisfies the imports at runtime.",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "install": {
+      "defaultChoice": "bundled",
+      "minHostVersion": ">=2026.5.11"
+    },
+    "compat": {
+      "pluginApi": ">=2026.5.28"
+    },
+    "build": {
+      "openclawVersion": "2026.5.28",
+      "bundledDist": false
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}

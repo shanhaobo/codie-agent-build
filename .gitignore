@@ -1,0 +1,16 @@
+# Upstream agent forks are checked out here at build time (CI) or cloned
+# locally by the operator — never committed. They stay PRISTINE in their own
+# repos (shanhaobo/openhuman, /openclaw, /hermes-agent).
+/docker-registry/agents/
+
+# Build / dependency artifacts
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Local self-signed registry certs (retired; never used by public-registry CI)
+/docker-registry/certs/

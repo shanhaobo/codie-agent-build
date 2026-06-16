@@ -1,0 +1,15 @@
+{
+  "//": "Emit-mode config used only by the docker image build (pnpm build).",
+  "//noEmit": "The base tsconfig.json sets noEmit:true for vitest/typecheck;",
+  "//noEmit2": "this overrides it to compile index.ts + src/*.ts into build/ as JS.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "build",
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["index.ts", "src/**/*.ts", "types/**/*.d.ts"],
+  "exclude": ["tests", "**/*.test.ts", "vitest.config.ts"]
+}

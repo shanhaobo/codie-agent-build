@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-codie-emitter"
+version = "0.1.0"
+description = "Codie boundary-events emitter for Hermes agent containers (runtime shim)"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+packages = ["hermes_codie_emitter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

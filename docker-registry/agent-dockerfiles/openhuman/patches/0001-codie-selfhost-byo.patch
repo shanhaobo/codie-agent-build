@@ -1,0 +1,149 @@
+diff --git a/src/openhuman/inference/provider/factory.rs b/src/openhuman/inference/provider/factory.rs
+index ca8d6d6..e079d97 100644
+--- a/src/openhuman/inference/provider/factory.rs
++++ b/src/openhuman/inference/provider/factory.rs
+@@ -33,6 +33,11 @@ use crate::openhuman::inference::provider::ProviderRuntimeOptions;
+ 
+ /// Sentinel meaning "use the OpenHuman backend session JWT".
+ pub const PROVIDER_OPENHUMAN: &str = "openhuman";
++/// Codie self-host patch: sentinel meaning "use the container's BYO
++/// OpenAI-compatible endpoint (`inference_url`+`api_key`), bypassing the
++/// OpenHuman login gate". Codie ships openhuman-core headless with no
++/// OpenHuman account.
++pub const CODIE_SELFHOST_BYO: &str = "codie_selfhost_byo";
+ /// Prefix for Ollama-local providers: `"ollama:<model>"`.
+ pub const OLLAMA_PROVIDER_PREFIX: &str = "ollama:";
+ 
+@@ -52,6 +57,14 @@ pub fn auth_key_for_slug(slug: &str) -> String {
+ /// the URL as a custom provider entry but older configs did not explicitly set
+ /// per-workload routes.
+ pub fn provider_for_role(role: &str, config: &Config) -> String {
++    // ── Codie self-host BYO patch ──────────────────────────────────────
++    // A configured direct BYO endpoint (inference_url+api_key) overrides
++    // every workload role: Codie runs openhuman-core headless with no
++    // OpenHuman account, so all inference must go to the user's own
++    // OpenAI-compatible endpoint. See `codie_selfhost_byo_active`.
++    if codie_selfhost_byo_active(config) {
++        return CODIE_SELFHOST_BYO.to_string();
++    }
+     let opt = match role {
+         "chat" => config.chat_provider.as_deref(),
+         "reasoning" => config.reasoning_provider.as_deref(),
+@@ -116,6 +129,16 @@ pub fn create_chat_provider_from_string(
+         return make_openhuman_backend(config);
+     }
+ 
++    // ── Codie self-host BYO patch ──────────────────────────────────────
++    // Build the BYO OpenAI-compatible provider directly, BEFORE the session
++    // gate below. The gate exists to stop unregistered users from reaching
++    // custom providers; Codie's headless container is the legitimate
++    // self-host case and ships its own key, so it must not require an
++    // OpenHuman login.
++    if p == CODIE_SELFHOST_BYO {
++        return make_codie_selfhost_byo(config);
++    }
++
+     // ── Session gate ──────────────────────────────────────────────────
+     // Custom providers (Ollama, <slug>:<model>) require an active
+     // OpenHuman session.  Without this check an unregistered user can
+@@ -180,6 +203,45 @@ pub fn create_chat_provider_from_string(
+ 
+ // ── Internal helpers ──────────────────────────────────────────────────────────
+ 
++/// Codie self-host patch: true when the container is configured with a direct
++/// BYO OpenAI-compatible endpoint (`inference_url`+`api_key`, and the URL is
++/// not the OpenHuman hosted backend). In that mode all inference bypasses the
++/// OpenHuman login gate and talks straight to the user's endpoint.
++fn codie_selfhost_byo_active(config: &Config) -> bool {
++    let url = config.inference_url.as_deref().map(str::trim).unwrap_or("");
++    let key = config.api_key.as_deref().map(str::trim).unwrap_or("");
++    !url.is_empty() && !key.is_empty() && !looks_like_openhuman_backend(url)
++}
++
++/// Codie self-host patch: build the BYO OpenAI-compatible provider straight
++/// from `inference_url`/`api_key`/`default_model`. No session required.
++fn make_codie_selfhost_byo(config: &Config) -> anyhow::Result<(Box<dyn Provider>, String)> {
++    let url = config.inference_url.as_deref().map(str::trim).unwrap_or("");
++    let key = config.api_key.as_deref().map(str::trim).unwrap_or("");
++    if url.is_empty() || key.is_empty() {
++        anyhow::bail!(
++            "[chat-factory] codie self-host BYO selected but inference_url/api_key are empty"
++        );
++    }
++    let model = config
++        .default_model
++        .clone()
++        .filter(|m| !m.trim().is_empty())
++        .unwrap_or_else(|| "gpt-4o".to_string());
++    log::info!(
++        "[providers][chat-factory] codie self-host BYO → {} (model={})",
++        url,
++        model
++    );
++    let provider = OpenAiCompatibleProvider::new_no_responses_fallback(
++        "codie_selfhost",
++        url,
++        Some(key),
++        CompatAuthStyle::Bearer,
++    );
++    Ok((Box::new(provider), model))
++}
++
+ /// Build the OpenHuman backend provider (session-JWT auth).
+ fn make_openhuman_backend(config: &Config) -> anyhow::Result<(Box<dyn Provider>, String)> {
+     let model = config
+diff --git a/src/openhuman/inference/provider/factory_test.rs b/src/openhuman/inference/provider/factory_test.rs
+index b82c477..f35cb93 100644
+--- a/src/openhuman/inference/provider/factory_test.rs
++++ b/src/openhuman/inference/provider/factory_test.rs
+@@ -71,6 +71,50 @@ fn cloud_no_providers_falls_back_to_openhuman() {
+     );
+ }
+ 
++// ── Codie self-host BYO patch ────────────────────────────────────────────
++// Codie ships openhuman-core headless with no OpenHuman account. When the
++// container is configured with a direct BYO endpoint (inference_url+api_key),
++// every workload role must route to that endpoint regardless of per-role
++// config, and the build must NOT depend on an OpenHuman session.
++
++#[test]
++fn codie_selfhost_byo_overrides_every_role() {
++    let mut config = Config::default();
++    config.inference_url = Some("https://api.deepseek.com".to_string());
++    config.api_key = Some("sk-test".to_string());
++    config.default_model = Some("deepseek-chat".to_string());
++    // Even with a per-role provider pointing elsewhere, BYO wins.
++    config.chat_provider = Some("openhuman".to_string());
++
++    for role in ["chat", "reasoning", "agentic", "coding", "memory"] {
++        assert_eq!(
++            provider_for_role(role, &config),
++            CODIE_SELFHOST_BYO,
++            "role {role} must route to the self-host BYO endpoint"
++        );
++    }
++    let (_, model) =
++        create_chat_provider_from_string("chat", CODIE_SELFHOST_BYO, &config).expect("build");
++    assert_eq!(model, "deepseek-chat");
++}
++
++#[test]
++fn codie_selfhost_byo_inactive_without_key() {
++    let mut config = Config::default();
++    config.inference_url = Some("https://api.deepseek.com".to_string());
++    // No api_key → not self-host BYO; falls through to normal resolution.
++    assert_ne!(provider_for_role("chat", &config), CODIE_SELFHOST_BYO);
++}
++
++#[test]
++fn codie_selfhost_byo_inactive_for_openhuman_url() {
++    let mut config = Config::default();
++    config.inference_url = Some("https://api.openhuman.ai/v1".to_string());
++    config.api_key = Some("sk-test".to_string());
++    // An OpenHuman backend URL is the hosted path, not a BYO endpoint.
++    assert_ne!(provider_for_role("chat", &config), CODIE_SELFHOST_BYO);
++}
++
+ #[test]
+ fn direct_cloud_sentinel_resolves_to_primary_custom_provider() {
+     let mut config = config_with_providers(vec![oh_entry("p_oh"), openai_entry("p_oai", "openai")]);

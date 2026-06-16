@@ -1,0 +1,88 @@
+name: build-agent-images
+
+# Builds the codie agent container images by wrapping each upstream fork with
+# codie's Dockerfile + shim/emitter/patches (this repo), then pushing multi-arch
+# images to ghcr.io. The three forks stay PRISTINE — they are checked out here
+# purely as build context.
+#
+#   fork (upstream source)  +  this repo (codie wrapper)  ->  ghcr.io/<owner>/<image>
+#
+# ACR / TCR mirroring is added later (see the commented block in the build step)
+# once those namespaces + secrets exist. For now this proves the build on ghcr.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Target platforms (use linux/amd64 alone for a fast first validation)"
+        default: "linux/arm64,linux/amd64"
+        required: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write   # push to ghcr.io with the built-in GITHUB_TOKEN
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - agent: openhuman
+            fork: shanhaobo/openhuman
+            script: build-openhuman-docker.sh
+          - agent: openclaw
+            fork: shanhaobo/openclaw
+            script: build-openclaw-docker.sh
+          - agent: hermes-agent
+            fork: shanhaobo/hermes-agent
+            script: build-hermes-docker.sh
+    steps:
+      # 1. The codie wrapper (this repo) → workspace root.
+      - name: Checkout build repo (codie wrapper)
+        uses: actions/checkout@v4
+
+      # 2. The upstream fork → docker-registry/agents/<agent> (the build CONTEXT
+      #    the build scripts expect). Kept pristine; only used as source here.
+      - name: Checkout agent fork as build context
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.fork }}
+          path: docker-registry/agents/${{ matrix.agent }}
+          # full history so the openhuman patch's `git apply` + the build
+          # script's `git rev-parse` work against a real repo.
+          fetch-depth: 0
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.agent }} (multi-arch → ghcr.io)
+        env:
+          # ghcr namespace = repo owner (shanhaobo). Lowercased to be safe.
+          REGISTRIES: ghcr.io/${{ github.repository_owner }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/arm64,linux/amd64' }}
+          # docker.io reachable from GitHub runners — no mirror needed here.
+        run: |
+          set -euo pipefail
+          echo "Building ${{ matrix.agent }} → ${REGISTRIES} (${PLATFORMS})"
+          bash docker-registry/scripts/${{ matrix.script }}
+        # ── Adding ACR + TCR later ───────────────────────────────────────────
+        # 1. Add `docker/login-action` steps for ACR + TCR above (with their
+        #    secrets: ACR_USERNAME/ACR_PASSWORD, TCR_USERNAME/TCR_PASSWORD).
+        # 2. Set REGISTRIES to a comma list, e.g.:
+        #      REGISTRIES: ghcr.io/${{ github.repository_owner }},registry.cn-hangzhou.aliyuncs.com/<ns>,ccr.ccs.tencentyun.com/<ns>
+        #    The build script already pushes one buildx build to all listed
+        #    registries in a single pass (same digest, multi-arch preserved).

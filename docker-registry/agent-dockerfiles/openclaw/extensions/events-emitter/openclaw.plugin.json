@@ -1,0 +1,14 @@
+{
+  "id": "events-emitter",
+  "name": "Codie Events Emitter",
+  "description": "Forwards OpenClaw boundary events (lifecycle/tool/subagent) to codie-host-mcp for AgentDesk visualization.",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
