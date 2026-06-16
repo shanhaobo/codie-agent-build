@@ -24,6 +24,13 @@ permissions:
   contents: read
   packages: write   # push to ghcr.io with the built-in GITHUB_TOKEN
 
+# Run the bundled JS actions (checkout, docker/*) on Node 24 instead of the
+# deprecated Node 20 runtime, silencing the "Node.js 20 actions are deprecated"
+# warning. GitHub makes Node 24 the default from 2026-06-16; this just opts in
+# early. Cosmetic — has no effect on the build itself.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest
