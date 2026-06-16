@@ -40,17 +40,22 @@ docker-registry/
 
 ## CI 怎么跑(GitHub Actions)
 
-`build-agent-images.yml`,矩阵跑三个 agent,每个:
+`build-agent-images.yml`,**每个架构在各自的原生 runner 上构建,无 QEMU**(amd64 → `ubuntu-latest`,arm64 → `ubuntu-24.04-arm`)。两段式:
 
+**Stage 1 `build`**(矩阵 3 agent × 2 架构 = 6 个 job,各自原生):
 1. checkout 本仓库(包装)→ 工作区根
 2. checkout 对应 fork → `docker-registry/agents/<agent>`(纯上游,当上下文)
-3. setup QEMU(arm64 模拟)+ Buildx
+3. setup Buildx(**不装 QEMU**——runner 本身就是目标架构)
 4. 登录 ghcr.io(内置 `GITHUB_TOKEN`)
-5. 跑 `build-<agent>-docker.sh`,`REGISTRIES=ghcr.io/<owner>` → buildx 多架构 `--push`
+5. 跑 `build-<agent>-docker.sh`,`BUILD_MODE=digest` + `PLATFORMS=<单架构>` → 按 **digest 推送**(无 tag),`--metadata-file` 取回 digest,上传为 artifact
 
-**触发**:`workflow_dispatch`(手动,可选 `platforms`)或打 `v*` tag。
+**Stage 2 `merge`**(矩阵 3 agent,`needs: build`):下载该 agent 两个架构的 digest → `docker buildx imagetools create` 合并成**多架构 manifest list**,打 `:latest` + `:YYYYMMDD-HHMM-<sha>` 两个 tag。
 
-> **首次验证提速**:openhuman 是 Rust,arm64 走 QEMU 模拟很慢。先用 `workflow_dispatch` 把 `platforms` 填 `linux/amd64` 跑通,再开 `linux/arm64,linux/amd64`。
+**触发**:`workflow_dispatch`(手动)或打 `v*` tag。要增减架构,直接改 `build` 的矩阵 `include`。
+
+> **为什么原生而非 QEMU**:openhuman(Rust 全量编译)、openclaw(Node/tsdown 打包)是 CPU 密集型,QEMU 模拟 arm64 会慢 5～10 倍、动辄数小时甚至撞 6 小时 job 上限。原生 arm runner 把这些降到几十分钟。公开仓库的 GitHub 托管 arm runner 免费。
+
+> **本地/单机多架构**:`_lib.sh` 默认 `BUILD_MODE=manifest`(老路径,`-t tag --push` 一次出多架构 manifest),本地构建行为不变;`digest` 模式仅 CI 用。
 
 ## 本地构建(可选)
 

@@ -101,6 +101,40 @@ compute_push_tags() {
     fi
 }
 
+# Build the buildx output/destination args into the global OUTPUT_ARGS array.
+# Two modes, selected by BUILD_MODE:
+#   manifest (default): tag each registry (BUILD_TAG_ARGS) and --push a manifest
+#       list directly. Used by local builds and any single-runner multi-arch
+#       build. Behavior is byte-identical to the original scripts.
+#   digest: push the (single-platform) image BY DIGEST with no tag, and write a
+#       --metadata-file so the caller/CI can read containerimage.digest. Used by
+#       the native-per-arch CI build jobs; a later `imagetools create` merge step
+#       assembles the multi-arch manifest list from each arch's digest. Requires
+#       exactly one registry and a single --platform (the merge step fans out to
+#       additional registries; cross-arch happens via native runners, not here).
+# compute_push_tags must run first (manifest mode reads BUILD_TAG_ARGS).
+build_output_args() {
+    local base="$1"
+    OUTPUT_ARGS=()
+    if [[ "${BUILD_MODE:-manifest}" == "digest" ]]; then
+        _split_registries
+        if [[ "${#REGISTRY_LIST[@]}" -ne 1 ]]; then
+            echo "error: BUILD_MODE=digest needs exactly one registry (got: ${REGISTRIES})" >&2
+            echo "       multi-registry fan-out is the merge step's job." >&2
+            exit 1
+        fi
+        case "$PLATFORMS" in
+            *,*) echo "error: BUILD_MODE=digest needs a single --platform (got: $PLATFORMS)" >&2; exit 1 ;;
+        esac
+        local push
+        push="$(_push_host "${REGISTRY_LIST[0]}")"
+        OUTPUT_ARGS+=(--output "type=image,name=$push/$base,push-by-digest=true,name-canonical=true,push=true")
+        OUTPUT_ARGS+=(--metadata-file "${METADATA_FILE:-$base-metadata.json}")
+    else
+        OUTPUT_ARGS+=("${BUILD_TAG_ARGS[@]}" --push)
+    fi
+}
+
 # Render a buildkitd.toml fragment marking only plain-HTTP local/compose
 # registries as insecure HTTP, plus optional docker.io mirrors. Public
 # registries get NO entry (default HTTPS + system-root validation). Writes to $1.

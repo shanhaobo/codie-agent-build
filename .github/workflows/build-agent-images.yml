@@ -7,15 +7,21 @@ name: build-agent-images
 #
 #   fork (upstream source)  +  this repo (codie wrapper)  ->  ghcr.io/<owner>/<image>
 #
-# ACR / TCR mirroring is added later (see the commented block in the build step)
+# Each architecture is built on its OWN NATIVE runner (amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm) — NO QEMU emulation. The heavy compile-bound images
+# (openhuman = Rust, openclaw = Node/tsdown) take minutes natively instead of
+# hours under QEMU. Per-arch images are pushed BY DIGEST (untagged); a `merge`
+# job then assembles the multi-arch manifest list and applies the tags.
+#
+# ACR / TCR mirroring is added later (see the commented block in the merge step)
 # once those namespaces + secrets exist. For now this proves the build on ghcr.
 
 on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Target platforms (use linux/amd64 alone for a fast first validation)"
-        default: "linux/arm64,linux/amd64"
+        description: "Informational only — each arch builds on its native runner via the matrix below. Edit the matrix to drop an arch."
+        default: "linux/amd64,linux/arm64"
         required: false
   push:
     tags: ["v*"]
@@ -25,21 +31,20 @@ permissions:
   packages: write   # push to ghcr.io with the built-in GITHUB_TOKEN
 
 jobs:
+  # ── Stage 1: per-arch native build, pushed BY DIGEST (no tag) ──────────────
   build:
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.agent }} · ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - agent: openhuman
-            fork: shanhaobo/openhuman
-            script: build-openhuman-docker.sh
-          - agent: openclaw
-            fork: shanhaobo/openclaw
-            script: build-openclaw-docker.sh
-          - agent: hermes-agent
-            fork: shanhaobo/hermes-agent
-            script: build-hermes-docker.sh
+          - { agent: openhuman,    fork: shanhaobo/openhuman,    script: build-openhuman-docker.sh, arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
+          - { agent: openhuman,    fork: shanhaobo/openhuman,    script: build-openhuman-docker.sh, arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+          - { agent: openclaw,     fork: shanhaobo/openclaw,     script: build-openclaw-docker.sh,  arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
+          - { agent: openclaw,     fork: shanhaobo/openclaw,     script: build-openclaw-docker.sh,  arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+          - { agent: hermes-agent, fork: shanhaobo/hermes-agent, script: build-hermes-docker.sh,    arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
+          - { agent: hermes-agent, fork: shanhaobo/hermes-agent, script: build-hermes-docker.sh,    arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
     steps:
       # 1. The codie wrapper (this repo) → workspace root.
       - name: Checkout build repo (codie wrapper)
@@ -47,23 +52,77 @@ jobs:
 
       # 2. The upstream fork → docker-registry/agents/<agent> (the build CONTEXT
       #    the build scripts expect). Kept pristine; only used as source here.
+      #    full history so the openhuman patch's `git apply` + the build
+      #    script's `git rev-parse` work against a real repo.
       - name: Checkout agent fork as build context
         uses: actions/checkout@v6
         with:
           repository: ${{ matrix.fork }}
           path: docker-registry/agents/${{ matrix.agent }}
-          # full history so the openhuman patch's `git apply` + the build
-          # script's `git rev-parse` work against a real repo.
           fetch-depth: 0
 
-      - name: Set up QEMU (arm64 emulation)
-        uses: docker/setup-qemu-action@v4
+      # No QEMU: this runner is already the target architecture.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
         with:
-          # Pull binfmt fresh each job instead of via GHA cache. The parallel
-          # matrix jobs otherwise race for the same cache key and log a benign
-          # "Unable to reserve cache ... another job may be creating this cache"
-          # warning. The re-pull is a few seconds; no effect on the build.
-          cache-image: false
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.agent }} (${{ matrix.arch }}, by digest)
+        env:
+          # ghcr namespace = repo owner (shanhaobo).
+          REGISTRIES: ghcr.io/${{ github.repository_owner }}
+          PLATFORMS: ${{ matrix.platform }}
+          BUILD_MODE: digest
+          METADATA_FILE: ${{ runner.temp }}/metadata-${{ matrix.agent }}-${{ matrix.arch }}.json
+        run: |
+          set -euo pipefail
+          echo "Building ${{ matrix.agent }} for ${PLATFORMS} natively on $(uname -m) → ${REGISTRIES} (by digest)"
+          bash docker-registry/scripts/${{ matrix.script }}
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          meta="${{ runner.temp }}/metadata-${{ matrix.agent }}-${{ matrix.arch }}.json"
+          digest=$(jq -r '.["containerimage.digest"]' "$meta")
+          if [ -z "$digest" ] || [ "$digest" = "null" ]; then
+            echo "error: no containerimage.digest in $meta" >&2
+            cat "$meta" >&2 || true
+            exit 1
+          fi
+          echo "Pushed digest: $digest"
+          mkdir -p "${{ runner.temp }}/digests"
+          # Filename = bare digest hash; the merge step globs these.
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.agent }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Stage 2: assemble the multi-arch manifest list + apply tags ────────────
+  merge:
+    name: merge (${{ matrix.agent }})
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [openhuman, openclaw, hermes-agent]
+    steps:
+      - name: Download per-arch digests for this agent
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-${{ matrix.agent }}-*
+          merge-multiple: true
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -75,20 +134,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ${{ matrix.agent }} (multi-arch → ghcr.io)
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
         env:
-          # ghcr namespace = repo owner (shanhaobo). Lowercased to be safe.
-          REGISTRIES: ghcr.io/${{ github.repository_owner }}
-          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/arm64,linux/amd64' }}
-          # docker.io reachable from GitHub runners — no mirror needed here.
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.agent }}
         run: |
           set -euo pipefail
-          echo "Building ${{ matrix.agent }} → ${REGISTRIES} (${PLATFORMS})"
-          bash docker-registry/scripts/${{ matrix.script }}
+          # ghcr requires lowercase repository paths.
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          # Immutable, human-traceable tag alongside :latest (mirrors the build
+          # scripts' compute_push_tags EXTRA_TAG: YYYYMMDD-HHMM-<short-sha>).
+          TS_TAG="$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+          count=$(ls -1 | wc -l)
+          echo "Merging ${count} arch digest(s) → ${IMAGE}:latest, ${IMAGE}:${TS_TAG}"
+          docker buildx imagetools create \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${TS_TAG}" \
+            $(printf "${IMAGE}@sha256:%s " *)
+          echo "── manifest ──"
+          docker buildx imagetools inspect "${IMAGE}:latest"
         # ── Adding ACR + TCR later ───────────────────────────────────────────
-        # 1. Add `docker/login-action` steps for ACR + TCR above (with their
-        #    secrets: ACR_USERNAME/ACR_PASSWORD, TCR_USERNAME/TCR_PASSWORD).
-        # 2. Set REGISTRIES to a comma list, e.g.:
-        #      REGISTRIES: ghcr.io/${{ github.repository_owner }},registry.cn-hangzhou.aliyuncs.com/<ns>,ccr.ccs.tencentyun.com/<ns>
-        #    The build script already pushes one buildx build to all listed
-        #    registries in a single pass (same digest, multi-arch preserved).
+        # imagetools create can tag multiple registries in one call once their
+        # per-arch digests also exist there. Two options:
+        #   (a) push-by-digest to ACR/TCR in the build job too (set REGISTRIES to
+        #       a comma list — note BUILD_MODE=digest currently allows ONE
+        #       registry, so relax build_output_args first), OR
+        #   (b) keep building to ghcr only and have imagetools copy the finished
+        #       manifest: docker buildx imagetools create \
+        #         -t registry.cn-hangzhou.aliyuncs.com/<ns>/<img>:latest \
+        #         -t ccr.ccs.tencentyun.com/<ns>/<img>:latest \
+        #         "${IMAGE}:latest"
+        #     (add docker/login-action steps for ACR + TCR above with their
+        #      secrets: ACR_USERNAME/ACR_PASSWORD, TCR_USERNAME/TCR_PASSWORD).

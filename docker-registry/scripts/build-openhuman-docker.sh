@@ -55,6 +55,7 @@ fi
 
 ensure_builder
 compute_push_tags "$IMAGE_BASE" "$TAG"
+build_output_args "$IMAGE_BASE"
 
 # Optional Debian mirror override (APT_MIRROR=mirrors.tuna.tsinghua.edu.cn …).
 # trixie's apt 3.x balloons to OOM when deb.debian.org is flaky (hash-mismatch
@@ -71,9 +72,8 @@ docker buildx build --builder "$BUILDER" \
     --build-context "shared=$SHARED_CONTEXT" \
     --build-context "shim=$SHIM_CONTEXT" \
     -f "$DOCKERFILE" \
-    "${BUILD_TAG_ARGS[@]}" \
     ${EXTRA_BUILD_ARGS[@]+"${EXTRA_BUILD_ARGS[@]}"} \
-    --push \
+    "${OUTPUT_ARGS[@]}" \
     "$CONTEXT"
 
 echo ""

@@ -30,6 +30,7 @@ echo "Building $IMAGE_BASE from $CONTEXT @ $SOURCE_SHA"
 
 ensure_builder
 compute_push_tags "$IMAGE_BASE" "$TAG"
+build_output_args "$IMAGE_BASE"
 
 echo "Building $IMAGE_BASE:$TAG for $PLATFORMS → ${REGISTRIES_DISPLAY}..."
 docker buildx build --builder "$BUILDER" \
@@ -37,8 +38,7 @@ docker buildx build --builder "$BUILDER" \
     --build-context "shared=$SHARED_CONTEXT" \
     --build-context "emitter=$REPO_ROOT/docker-registry/agent-dockerfiles/hermes-agent/extensions/hermes-codie-emitter" \
     -f "$DOCKERFILE" \
-    "${BUILD_TAG_ARGS[@]}" \
-    --push \
+    "${OUTPUT_ARGS[@]}" \
     "$CONTEXT"
 
 echo ""
