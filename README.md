@@ -30,25 +30,17 @@ codie 的包装(本仓库 `docker-registry/agent-dockerfiles/<agent>/`)注入 co
 
 ```
 docker-registry/
-  scripts/                build-<agent>-docker.sh + build-<x>-mcp-docker.sh + _lib.sh
+  scripts/                build-<agent>-docker.sh + _lib.sh(已公网安全化:只把 localhost 判 insecure)
   agent-dockerfiles/      codie 的包装 Dockerfile + patch/shim/emitter（每个 agent 一份）
-  sidecars/<name>/        MCP sidecar 自包含上下文(Dockerfile + server.py + pyproject)
   shared/                 共享工具链脚本
   agents/<agent>/         ← 上游 fork 在此被 checkout/clone（gitignored,绝不入库）
 .github/workflows/
-  build-agent-images.yml    agent 多架构构建(openhuman/openclaw/hermes)→ ghcr.io
-  build-sidecar-images.yml  sidecar 多架构构建(media/browser/search/memory/home)→ ghcr.io
+  build-agent-images.yml  多架构构建 → ghcr.io
 ```
 
-## sidecar 与 agent 的区别
-
-| | agent(openhuman/openclaw/hermes) | sidecar(media/browser/search/memory/home MCP) |
-|---|---|---|
-| 源码 | 外部 fork(checkout 当上下文) | **本仓库自带**(`docker-registry/sidecars/<name>/`,无 fork) |
-| workflow | `build-agent-images.yml`(`workflow_dispatch` / `v*` tag) | `build-sidecar-images.yml`(`workflow_dispatch` / `sidecar-v*` tag) |
-| 构建方式 | 同一套:原生 runner per-arch → push-by-digest → `imagetools create` 合并多架构 + 打 tag | 同左 |
-
-> `codie_host` sidecar 是 **PyInstaller 二进制**、随 Bridge 打包,**不是容器镜像**,不在此流水线。CodieClaw(`codie-claw`)押后:它的上下文是整个私有 monorepo,形态不同。
+> **MCP sidecar 镜像**(media/browser/search/memory/home)在独立仓库
+> [`codie-sidecar-build`](https://github.com/shanhaobo/codie-sidecar-build)
+> 构建——它们是 codie 自有源码、不包装 fork,职责与本仓库分开。
 
 ## CI 怎么跑(GitHub Actions)
 
