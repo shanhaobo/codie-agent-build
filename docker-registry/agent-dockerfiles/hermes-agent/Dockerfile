@@ -70,7 +70,19 @@ RUN uv pip install --python /opt/hermes/.venv/bin/python --no-deps /opt/codie-em
     echo "[codie-emitter] installed; .pth at $SP/hermes_codie_emitter.pth"
 
 USER root
-RUN chmod +x /opt/hermes/docker/entrypoint.sh
+# Overwrite upstream's docker/entrypoint.sh with codie's pre-s6 entrypoint.
+#
+# Upstream migrated container startup to s6-overlay: the real ENTRYPOINT is now
+# /init and docker/entrypoint.sh is a deprecated shim that runs only the
+# cont-init bootstrap (via `s6-setuidgid`) and does NOT exec the CMD. codie's
+# launch path bypasses /init entirely — Bridge's codie_inject.py runs
+# `exec /opt/hermes/docker/entrypoint.sh gateway run` (see hermes_manifest.dart)
+# expecting the pre-s6 "bootstrap + gosu-drop + exec hermes $@" contract. Under
+# the s6 shim that crashes with `s6-setuidgid: not found` (exit 127) — s6 is not
+# installed here — and never starts the gateway. codie-entrypoint.sh restores
+# that contract using gosu (installed above). Sourced via the `codie` build
+# context (see build-hermes-docker.sh). See project_hermes_image_s6_broken.
+COPY --chmod=0755 --from=codie codie-entrypoint.sh /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data
 VOLUME [ "/opt/data" ]

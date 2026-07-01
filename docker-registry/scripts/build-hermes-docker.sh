@@ -37,6 +37,7 @@ docker buildx build --builder "$BUILDER" \
     --platform "$PLATFORMS" \
     --build-context "shared=$SHARED_CONTEXT" \
     --build-context "emitter=$REPO_ROOT/docker-registry/agent-dockerfiles/hermes-agent/extensions/hermes-codie-emitter" \
+    --build-context "codie=$REPO_ROOT/docker-registry/agent-dockerfiles/hermes-agent" \
     -f "$DOCKERFILE" \
     "${OUTPUT_ARGS[@]}" \
     "$CONTEXT"
