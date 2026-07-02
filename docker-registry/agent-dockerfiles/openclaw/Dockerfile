@@ -257,6 +257,16 @@ COPY --from=emitter-build --chown=node:node /work/build ./dist/extensions/events
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 COPY --from=runtime-assets --chown=node:node /app/qa ./qa
+# Workspace templates. OpenClaw 2026.6.x relocated the CANONICAL template dir to
+# src/agents/templates/ (previously docs/reference/templates/) and, critically,
+# special-cased HEARTBEAT.md: loadTemplate("HEARTBEAT.md") searches ONLY the
+# primary dir (packageRoot/src/agents/templates) and does NOT fall back to
+# docs/reference/templates like the other templates do. This runtime image ships
+# dist/ (compiled JS) but not src/, so without this copy the agent bootstrap dies
+# with "Missing workspace template: HEARTBEAT.md (/app/src/agents/templates/
+# HEARTBEAT.md)". The dir is tiny (.md assets, not compiled) — copy it verbatim so
+# the primary resolver finds it. See docs/plans registry+build notes.
+COPY --from=runtime-assets --chown=node:node /app/src/agents/templates ./src/agents/templates
 
 # Keep pnpm available in the runtime image for container-local workflows.
 # Use a shared Corepack home so the non-root `node` user does not need a
